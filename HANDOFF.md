@@ -4,7 +4,7 @@ Written for a fresh session (human or Claude) with no prior context. Read this,
 then `README.md` for the architecture.
 
 **Branch:** `claude/new-session-miyh25` (not `main`)
-**Last commit:** `c5262cf` — "Rework calibration against real session frames"
+**Last commit:** see `git log -1` — the media pipeline now runs on synthetic media
 **Status:** 200 tests passing, frontend builds clean, phases 1 and 5 working end
 to end. Phases 2–4 now run end to end against a *synthetic* session
 (`backend/tests/synthetic.py`) built to the geometry and timing measured off
@@ -60,9 +60,18 @@ cp ~/Downloads/IMG_5852.MOV ~/.golf-analyzer/inbox/
 .venv/bin/python -m backend.app.pipeline.watcher --once
 ```
 
-It prints one line per stage. **Stage 2 (calibration) is the expected failure
-point.** If it reports `needs_calibration`, that is designed behaviour, not a
-crash — spec §4 says never guess a crop. Capture the output either way.
+It prints one line per stage. Stages 1–3 now work on synthetic media, so the
+likely failure mode is a *count* mismatch rather than a crash: too many or too
+few detected shots, which is threshold tuning (see open question 3), not a
+design fault. If stage 2 reports `needs_calibration`, that is designed
+behaviour — spec §4 says never guess a crop. Capture the output either way.
+
+The synthetic harness is reusable for reproducing any bug you find:
+
+```python
+from backend.tests import synthetic
+s = synthetic.build("/tmp/s.mp4", shots=4)   # returns ground truth alongside
+```
 
 Before anything else, confirm there is an audio track at all:
 
@@ -135,9 +144,12 @@ unit" assumption looks stale.
 | Shot binding logic | Verified — 11 tests, pure function |
 | Club persistence / change guard | Verified — 13 tests, pure function |
 | Panel geometry | Verified against *measurements*, not pixels — 15 tests |
-| Frame grabbing, screen detection | **Never run** |
+| Ingest, probe, audio extraction | Verified on synthetic media — 12 tests |
+| Screen detection, panel derivation | Verified on synthetic media |
+| Panel change detection | Verified on synthetic media |
+| Impact onset detection | Verified on synthetic media |
+| Detector thresholds on *real* media | **Never run** — expect retuning |
 | Whisper transcription | **Never run** |
-| ffmpeg ingest, audio extraction, clips | **Never run** |
 | Live vision / voice / insight model calls | **Never run** |
 
 ---
