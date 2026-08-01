@@ -14,16 +14,37 @@ from pathlib import Path
 
 from ..config import settings
 from .. import store
+from .media import ffmpeg_path, ffprobe_path, probe_with_opencv
 
 
 class IngestError(RuntimeError):
     pass
 
 
+def _mtime_iso(video_path: Path | str) -> str:
+    """Fall back to the file's mtime rather than "now" -- a video copied off a
+    phone weeks later should still date to when it was shot."""
+    return datetime.fromtimestamp(
+        Path(video_path).stat().st_mtime, tz=timezone.utc
+    ).isoformat(timespec="seconds")
+
+
 def probe(video_path: Path | str) -> dict:
-    """ffprobe the source. Duration, resolution, fps, creation timestamp."""
+    """Duration, resolution, fps, creation timestamp.
+
+    Prefers ffprobe, which is the only source for the container's real creation
+    timestamp. Falls back to OpenCV when ffprobe is absent -- a bundled
+    ``imageio-ffmpeg`` gives us ffmpeg but not ffprobe, and that combination
+    should still be able to ingest.
+    """
+    probe_bin = ffprobe_path()
+    if probe_bin is None:
+        meta = probe_with_opencv(video_path)
+        meta["recorded_at"] = _mtime_iso(video_path)
+        return meta
+
     cmd = [
-        "ffprobe",
+        probe_bin,
         "-v",
         "error",
         "-print_format",
@@ -34,8 +55,6 @@ def probe(video_path: Path | str) -> dict:
     ]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout
-    except FileNotFoundError as exc:
-        raise IngestError("ffprobe is not on PATH; install ffmpeg") from exc
     except subprocess.CalledProcessError as exc:
         raise IngestError(f"ffprobe failed: {exc.stderr.strip()}") from exc
 
@@ -48,19 +67,11 @@ def probe(video_path: Path | str) -> dict:
     fps = float(num) / float(den or 1)
 
     fmt = data.get("format", {})
-    recorded_at = fmt.get("tags", {}).get("creation_time")
-    if not recorded_at:
-        # Fall back to the file's mtime rather than "now" -- an MP4 copied off a
-        # phone weeks later should still date to when it was shot.
-        recorded_at = datetime.fromtimestamp(
-            Path(video_path).stat().st_mtime, tz=timezone.utc
-        ).isoformat(timespec="seconds")
-
     return {
         "duration_s": float(fmt.get("duration", 0.0)),
         "fps": round(fps, 3),
         "resolution": f"{video['width']}x{video['height']}",
-        "recorded_at": recorded_at,
+        "recorded_at": fmt.get("tags", {}).get("creation_time") or _mtime_iso(video_path),
     }
 
 
@@ -69,7 +80,7 @@ def extract_audio(video_path: Path | str, out_path: Path | str) -> Path:
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-loglevel",
         "error",
@@ -86,8 +97,6 @@ def extract_audio(video_path: Path | str, out_path: Path | str) -> Path:
     ]
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise IngestError("ffmpeg is not on PATH") from exc
     except subprocess.CalledProcessError as exc:
         raise IngestError(f"audio extraction failed: {exc.stderr.strip()}") from exc
     return out

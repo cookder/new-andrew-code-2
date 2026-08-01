@@ -31,6 +31,12 @@ from ..constants import (
     CANONICAL_PANEL_SIZE,
     FLAG_UNMATCHED_IMPACT,
     FLAG_UNMATCHED_PANEL_CHANGE,
+    ONSET_BASELINE_SIGMAS,
+    ONSET_PEAK_DELTA,
+    ONSET_RELATIVE_FLOOR,
+    PANEL_CHANGE_THRESHOLD,
+    PANEL_DIFF_SIZE,
+    PANEL_PIXEL_DELTA,
     PANEL_SAMPLE_FPS,
 )
 from .calibration import header_height
@@ -117,13 +123,21 @@ def detect_panel_changes(
     transform: list[list[float]],
     *,
     sample_fps: float = PANEL_SAMPLE_FPS,
-    threshold: float = 0.12,
+    threshold: float = PANEL_CHANGE_THRESHOLD,
 ) -> list[float]:
     """Sample the canonicalized panel and return timestamps where it changed.
 
-    The diff is a normalized mean absolute difference over a downscaled
-    grayscale panel crop -- cheap, and insensitive to the compression noise and
-    small camera drift that a handheld/propped phone produces.
+    The metric is the *fraction of pixels that visibly changed*, not the mean
+    absolute difference. Mean-abs-diff is the obvious choice and it does not
+    work here: the panel is mostly flat background, and a full set of new
+    numbers is thin strokes covering a few percent of the area, so every real
+    shot averages out to a diff of ~0.001 -- indistinguishable from compression
+    noise, and two orders of magnitude below any threshold that would also
+    reject noise.
+
+    Counting changed pixels instead separates them cleanly, and it stays stable
+    if the projector brightness drifts, since a global shift moves every pixel
+    a little rather than a few pixels a lot.
     """
     import cv2  # lazy: opencv is only needed for phase 3
     import numpy as np
@@ -154,10 +168,14 @@ def detect_panel_changes(
                 # whole strip costs no signal.
                 values_only = panel[header_height() :, :]
                 gray = cv2.cvtColor(values_only, cv2.COLOR_BGR2GRAY)
-                small = cv2.resize(gray, (64, 128)).astype("float32") / 255.0
+                # Keep enough resolution that digit strokes survive; downscaling
+                # to thumbnail size erases the very thing being detected.
+                small = cv2.resize(gray, PANEL_DIFF_SIZE).astype("float32") / 255.0
                 if previous is not None:
-                    diff = float(np.abs(small - previous).mean())
-                    if diff > threshold:
+                    changed = float(
+                        np.mean(np.abs(small - previous) > PANEL_PIXEL_DELTA)
+                    )
+                    if changed > threshold:
                         changes.append(frame_index / fps)
                 previous = small
             frame_index += 1
@@ -181,21 +199,46 @@ def detect_impacts(
     import librosa  # lazy: phase 2 only
     import numpy as np
 
+    hop = 512
     y, sr = librosa.load(str(audio_path), sr=None, mono=True)
-    envelope = librosa.onset.onset_strength(y=y, sr=sr)
+    envelope = librosa.onset.onset_strength(y=y, sr=sr, hop_length=hop)
+    # NOTE ON `delta`: onset_detect max-normalizes the envelope to 0-1 before
+    # peak picking, so delta is a fraction of the *loudest onset in the whole
+    # session*, not an absolute strength. A large value therefore keeps only
+    # near-loudest impacts and silently drops the rest -- at 0.6 a thinned shot
+    # 80% as loud as the session's best strike vanishes, and mishits are exactly
+    # the shots the strike-location analysis exists to study. (A delta >= 1.0
+    # returns nothing at all, which is the giveaway.)
+    #
+    # Keep peak picking permissive here and do the speech rejection below,
+    # where the criterion is explicit and inspectable.
     frames = librosa.onset.onset_detect(
         onset_envelope=envelope,
         sr=sr,
+        hop_length=hop,
         backtrack=False,
         units="frames",
-        delta=0.6,
-        wait=int(min_separation_s * sr / 512),
+        delta=ONSET_PEAK_DELTA,
+        wait=int(min_separation_s * sr / hop),
     )
     if len(frames) == 0:
         return []
 
     strengths = envelope[frames]
-    # Impacts are the loud tail of the onset distribution; conversation is the body.
-    cutoff = float(np.median(strengths) + np.std(strengths))
+
+    # Reject the quiet onsets that speech produces, keep the impacts.
+    #
+    # The reference has to be the *envelope's* distribution and the loudest
+    # onset -- not the detected onsets' own median and standard deviation.
+    # Impacts within a session are of comparable strength, so a median+sigma
+    # cutoff computed over a clean set of impacts sits above most of them and
+    # discards real shots (it kept 1 of 4 on a signal with four identical
+    # transients).
+    baseline = float(np.median(envelope))
+    loudest = float(strengths.max())
+    cutoff = max(
+        baseline + ONSET_BASELINE_SIGMAS * float(np.std(envelope)),
+        baseline + ONSET_RELATIVE_FLOOR * (loudest - baseline),
+    )
     keep = [f for f, s in zip(frames, strengths, strict=True) if s >= cutoff]
-    return [float(t) for t in librosa.frames_to_time(keep, sr=sr)]
+    return [float(t) for t in librosa.frames_to_time(keep, sr=sr, hop_length=hop)]

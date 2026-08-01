@@ -94,9 +94,56 @@ def find_screen_corners(frame) -> Corners:
         # and any bright floor region that happens to close into a quad.
         if not (0.8 <= w / h <= 3.0):
             continue
-        return corners
+        return _reclaim_panel_edge(gray, corners)
 
     raise CalibrationError("could not locate the projected screen")
+
+
+def _reclaim_panel_edge(gray, corners: Corners) -> Corners:
+    """Extend the detected screen left to re-include the stat panel.
+
+    A brightness threshold finds the *illuminated* part of the screen, but the
+    stat panel is a dark overlay drawn on top of it, so the bright region stops
+    exactly where the panel begins and the panel is cropped off its own left
+    edge. Symptom: a panel crop full of sky, and a change detector that never
+    fires.
+
+    Brightness cannot recover it -- the panel's background is nearly as dark as
+    an unlit bay. What distinguishes the panel from the wall beside it is that
+    the panel has *bright digits on it*. So: measure the band where the panel
+    would be if it had been excluded, and extend only if that band contains
+    something bright.
+    """
+    import numpy as np
+
+    (tl, tr, br, bl) = corners
+    top = int(max(min(tl[1], tr[1]), 0))
+    bottom = int(min(max(bl[1], br[1]), gray.shape[0]))
+    left = int(max(min(tl[0], bl[0]), 0))
+    right = int(min(max(tr[0], br[0]), gray.shape[1]))
+    if bottom - top < 8 or left <= 1 or right - left < 8:
+        return corners
+
+    # If the panel is missing, the bright region is the remaining (1 - f) of the
+    # screen, so the panel band is this wide:
+    panel_fraction = PANEL_BOUNDS_IN_SCREEN[2] - PANEL_BOUNDS_IN_SCREEN[0]
+    band_w = int(round((right - left) * panel_fraction / (1.0 - panel_fraction)))
+    band_w = min(band_w, left)
+    if band_w < 4:
+        return corners
+
+    band = gray[top:bottom, left - band_w : left]
+    if band.size == 0:
+        return corners
+
+    baseline = float(np.percentile(gray, 10))            # unlit bay
+    lit = float(np.percentile(gray[top:bottom, left:right], 50))  # screen
+    # Digits are near-white; an empty wall has no such pixels.
+    has_content = float(np.percentile(band, 99)) > baseline + 0.45 * max(lit - baseline, 1.0)
+    if not has_content:
+        return corners
+
+    return [(tl[0] - band_w, tl[1]), tr, br, (bl[0] - band_w, bl[1])]
 
 
 def panel_from_screen(screen: Corners) -> Corners:

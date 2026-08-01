@@ -5,17 +5,46 @@ then `README.md` for the architecture.
 
 **Branch:** `claude/new-session-miyh25` (not `main`)
 **Last commit:** `c5262cf` — "Rework calibration against real session frames"
-**Status:** 188 tests passing, frontend builds clean, phases 1 and 5 working end
-to end, phases 2–4 written but never run against real media.
+**Status:** 200 tests passing, frontend builds clean, phases 1 and 5 working end
+to end. Phases 2–4 now run end to end against a *synthetic* session
+(`backend/tests/synthetic.py`) built to the geometry and timing measured off
+real frames — stages 1, 2, 3 and 7 are exercised for real. Still never run
+against actual footage.
 
 ---
 
 ## The one-line summary
 
-Everything that can be verified without a video, an ffmpeg binary, or an API key
-**is** verified. Everything that needs those three has never executed. The next
-action is to run the pipeline against a real session file and report where it
-stops.
+Everything verifiable without real footage or an API key **is** verified,
+including the media pipeline against a synthetic session. The next action is to
+run it against actual footage — the synthetic harness cannot validate detector
+*tuning*, only structure.
+
+Note that the sandbox needs no system ffmpeg: `pip install imageio-ffmpeg`
+supplies a static binary, and `probe()` falls back to OpenCV when ffprobe is
+absent. So the media tests run anywhere.
+
+## Four bugs the synthetic harness found
+
+All fixed, all would have fired on real footage:
+
+1. **Panel cropped off its own left edge.** Otsu finds the *illuminated* screen,
+   but the stat panel is a dark overlay — so the detected screen began exactly
+   where the panel ended, and the panel crop contained sky. Recovered by
+   measuring the band where the panel would be and extending only if it contains
+   bright digits (brightness alone can't tell panel from unlit bay).
+2. **Change detection could never fire.** Mean-absolute-difference over a
+   downscaled crop: a full set of new numbers is thin strokes over mostly flat
+   background, measuring ~0.001 against a threshold of 0.12. Replaced with
+   *fraction of pixels visibly changed*, at working resolution.
+3. **Onset post-filter discarded real shots.** It kept onsets above
+   `median + sigma` of the *detected onsets* — which, when detection is clean and
+   impacts are similar in loudness, sits above most of them. Kept 1 of 4.
+4. **`onset_detect(delta=...)` is a fraction of the loudest onset, not an
+   absolute.** librosa max-normalizes the envelope first, so `delta=0.6` meant
+   "must reach 60% of the session's loudest impact" and silently dropped quieter
+   ones — i.e. exactly the mishits that strike-location analysis exists to study.
+   Now 0.08, with speech rejection done explicitly afterwards.
 
 ---
 
@@ -56,9 +85,12 @@ These block real progress and only a session with the video can answer them.
 2. **Does the audio have usable narration?** Impact-onset detection, Whisper,
    and voice attribution are all untested against a real waveform. Strike
    location — the highest-value field in the system — depends entirely on this.
-3. **Does stage 2 find the screen?** Calibration is screen-first (bright
-   quadrilateral in a dark bay) with panel bounds derived as a fraction of it.
-   Tuned to measurements from two stills; never run on video.
+3. **Do the detector thresholds hold on real audio and video?**
+   `ONSET_PEAK_DELTA`, `ONSET_RELATIVE_FLOOR`, `PANEL_CHANGE_THRESHOLD` and
+   `PANEL_PIXEL_DELTA` in `constants.py` are calibrated against synthetic media.
+   The *structure* is now proven; the *numbers* are guesses until real footage
+   runs. Expect to retune, and treat a wrong count as tuning rather than a
+   design fault.
 4. **Does the Full Swing app export CSV?** Check the hamburger menu in the stat
    panel. Spec §11: if session export exists, §2, §3's OCR portions, and the
    whole of phase 3 become unnecessary — stats would join to the audio track by

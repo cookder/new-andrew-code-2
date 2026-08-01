@@ -15,6 +15,7 @@ from pathlib import Path
 
 from ..config import settings
 from ..constants import CLIP_AFTER_S, CLIP_BEFORE_S
+from .media import ffmpeg_path
 from .. import store
 
 
@@ -36,7 +37,7 @@ def cut_clip(
     duration = before + after if impact_ts - before >= 0 else impact_ts + after
 
     cmd = [
-        "ffmpeg",
+        ffmpeg_path(),
         "-y",
         "-loglevel",
         "error",
@@ -62,8 +63,6 @@ def cut_clip(
     ]
     try:
         subprocess.run(cmd, capture_output=True, text=True, check=True)
-    except FileNotFoundError as exc:
-        raise ClipError("ffmpeg is not on PATH") from exc
     except subprocess.CalledProcessError as exc:
         raise ClipError(f"clip extraction failed: {exc.stderr.strip()}") from exc
     return out

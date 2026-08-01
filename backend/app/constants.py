@@ -139,6 +139,27 @@ BIND_WINDOW_S = 10.0
 STAT_FRAME_OFFSET_S = 0.5
 #: Panel diff sampling rate.
 PANEL_SAMPLE_FPS = 2.0
+#: Working resolution for the panel change diff. Large enough that digit
+#: strokes survive the resize -- a thumbnail erases them.
+PANEL_DIFF_SIZE: tuple[int, int] = (100, 350)  # (width, height)
+#: A pixel counts as changed once it moves this far on a 0-1 grayscale scale.
+PANEL_PIXEL_DELTA = 0.15
+#: Fraction of panel pixels that must change to call it a completed shot.
+#: A fresh set of numbers moves a few percent of the panel; compression noise
+#: and the ball-flight animation move far less.
+PANEL_CHANGE_THRESHOLD = 0.02
+#: Peak-picking sensitivity for onset detection. This is a fraction of the
+#: loudest onset in the session, because librosa max-normalizes the envelope
+#: first -- keep it small so quiet mishits survive to the explicit filter below.
+ONSET_PEAK_DELTA = 0.08
+#: Onset filtering. An impact must clear the envelope baseline by this many
+#: standard deviations...
+ONSET_BASELINE_SIGMAS = 2.0
+#: ...and be at least this fraction as strong as the loudest onset in the
+#: session. Impacts are of comparable loudness; speech is markedly quieter.
+#: Both are tuned on synthetic audio and will need revisiting against a real
+#: recording -- see HANDOFF.md.
+ONSET_RELATIVE_FLOOR = 0.3
 #: Transcript window around impact handed to the voice-attribution LLM.
 VOICE_WINDOW_BEFORE_S = 15.0
 VOICE_WINDOW_AFTER_S = 20.0
