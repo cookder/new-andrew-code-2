@@ -33,6 +33,7 @@ from ..constants import (
     FLAG_UNMATCHED_PANEL_CHANGE,
     PANEL_SAMPLE_FPS,
 )
+from .calibration import header_height
 
 
 @dataclass
@@ -145,7 +146,14 @@ def detect_panel_changes(
                 break
             if frame_index % step == 0:
                 panel = cv2.warpPerspective(frame, matrix, CANONICAL_PANEL_SIZE)
-                gray = cv2.cvtColor(panel, cv2.COLOR_BGR2GRAY)
+                # Drop the header before diffing. It carries the shot counter
+                # and a badge that reads as a running clock -- a ticking clock
+                # inside the diff region would cross the threshold on every
+                # sample and report a shot roughly twice a second. The counter
+                # changes at the same instant the values do, so excluding the
+                # whole strip costs no signal.
+                values_only = panel[header_height() :, :]
+                gray = cv2.cvtColor(values_only, cv2.COLOR_BGR2GRAY)
                 small = cv2.resize(gray, (64, 128)).astype("float32") / 255.0
                 if previous is not None:
                     diff = float(np.abs(small - previous).mean())

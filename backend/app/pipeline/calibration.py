@@ -23,7 +23,14 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from ..constants import CANONICAL_PANEL_SIZE, FADED_ROWS, PANEL_GRID
+from ..constants import (
+    CANONICAL_PANEL_SIZE,
+    FADED_ROWS,
+    PANEL_ASPECT_RANGE,
+    PANEL_BOUNDS_IN_SCREEN,
+    PANEL_GRID,
+    PANEL_HEADER_FRACTION,
+)
 from .. import store
 
 
@@ -49,14 +56,87 @@ def _order_corners(points) -> Corners:
     ]
 
 
-def find_panel_corners(frame) -> Corners:
-    """Locate the stat panel's four corners in a full-resolution frame.
+def find_screen_corners(frame) -> Corners:
+    """Locate the projected simulator screen: a bright quadrilateral in a dark bay.
 
-    The panel is a bright bordered rectangle on the left edge of the simulator
-    screen with a distinctly tall aspect ratio (2 columns x 6 rows). We look for
-    the largest quadrilateral contour in the left half of the frame whose aspect
-    ratio matches.
+    This is the primary anchor. The bay is unlit apart from the projector and one
+    ceiling light, so the screen is by far the brightest large region in frame,
+    and unlike the stat panel it has a genuine edge on all four sides.
     """
+    import cv2
+    import numpy as np
+
+    height, width = frame.shape[:2]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (7, 7), 0)
+
+    # Otsu picks the bright/dark split for us, which survives the projector
+    # brightness varying between bays and between day and night sessions.
+    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    min_area = height * width * 0.02
+
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:12]:
+        area = cv2.contourArea(contour)
+        if area < min_area:
+            break
+        approx = cv2.approxPolyDP(contour, 0.02 * cv2.arcLength(contour, True), True)
+        if len(approx) != 4:
+            continue
+        corners = _order_corners(approx)
+        (tlx, tly), (trx, _), _, (blx, bly) = corners
+        w = max(abs(trx - tlx), 1.0)
+        h = max(abs(bly - tly), 1.0)
+        # The screen is wider than tall; reject the ceiling light's glare bloom
+        # and any bright floor region that happens to close into a quad.
+        if not (0.8 <= w / h <= 3.0):
+            continue
+        return corners
+
+    raise CalibrationError("could not locate the projected screen")
+
+
+def panel_from_screen(screen: Corners) -> Corners:
+    """Derive the stat panel quad from the screen quad.
+
+    The panel occupies a fixed fraction of the screen (left edge, near-full
+    height). Interpolating that fraction across the screen's own corners keeps
+    the panel's perspective, so this works from an off-axis camera without any
+    separate detection step.
+    """
+    left, top, right, bottom = PANEL_BOUNDS_IN_SCREEN
+    (tl, tr, br, bl) = screen
+
+    def lerp(a, b, t):
+        return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+    def point(u, v):
+        # Bilinear over the screen quad: across the top and bottom edges, then
+        # down between those two points.
+        return lerp(lerp(tl, tr, u), lerp(bl, br, u), v)
+
+    return [point(left, top), point(right, top), point(right, bottom), point(left, bottom)]
+
+
+def find_panel_corners(frame) -> Corners:
+    """Locate the stat panel.
+
+    Screen-first, because the panel is a translucent overlay with no hard border
+    and contour detection on it is unreliable. The direct search is kept as a
+    fallback for the case where the screen fills the frame and has no visible
+    edge of its own.
+    """
+    try:
+        return panel_from_screen(find_screen_corners(frame))
+    except CalibrationError:
+        return _find_panel_directly(frame)
+
+
+def _find_panel_directly(frame) -> Corners:
+    """Fallback: look for the panel as its own quadrilateral."""
     import cv2
     import numpy as np
 
@@ -69,8 +149,8 @@ def find_panel_corners(frame) -> Corners:
     edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
 
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    target_ratio = CANONICAL_PANEL_SIZE[1] / CANONICAL_PANEL_SIZE[0]
-    min_area = height * width * 0.01
+    lo, hi = PANEL_ASPECT_RANGE
+    min_area = height * width * 0.002
 
     best = None
     best_area = 0.0
@@ -85,15 +165,14 @@ def find_panel_corners(frame) -> Corners:
         (tlx, tly), (trx, _), _, (blx, bly) = corners
         w = max(abs(trx - tlx), 1.0)
         h = max(abs(bly - tly), 1.0)
-        ratio = h / w
-        if not (0.6 * target_ratio <= ratio <= 1.6 * target_ratio):
+        if not (lo <= h / w <= hi):
             continue
         if area > best_area:
             best, best_area = corners, area
 
     if best is None:
         raise CalibrationError(
-            "could not locate the stat panel border; manual corner selection required"
+            "could not locate the stat panel; manual corner selection required"
         )
     return best
 
@@ -216,20 +295,29 @@ def set_manual_corners(
     return payload
 
 
+def header_height() -> int:
+    """Pixel height of the panel's header strip on the canonical panel."""
+    return int(CANONICAL_PANEL_SIZE[1] * PANEL_HEADER_FRACTION)
+
+
 def cell_boxes() -> dict[str, tuple[int, int, int, int]]:
     """Pixel boxes for the 12 grid cells on the canonicalized panel.
 
     Read by grid position, never by caption -- section 2 is explicit that the
     captions are too small to OCR reliably, so position alone determines which
     metric a number is.
+
+    The grid starts below the header strip (hamburger, shot counter, clock),
+    which is not part of the 2x6 layout.
     """
     width, height = CANONICAL_PANEL_SIZE
+    top = header_height()
     rows = len(PANEL_GRID)
-    cell_w, cell_h = width // 2, height // rows
+    cell_w, cell_h = width // 2, (height - top) // rows
     boxes: dict[str, tuple[int, int, int, int]] = {}
     for r, row in enumerate(PANEL_GRID):
         for c, key in enumerate(row):
-            boxes[key] = (c * cell_w, r * cell_h, cell_w, cell_h)
+            boxes[key] = (c * cell_w, top + r * cell_h, cell_w, cell_h)
     return boxes
 
 

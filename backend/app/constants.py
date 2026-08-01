@@ -77,7 +77,33 @@ PANEL_GRID: tuple[tuple[str, str], ...] = (
 FADED_ROWS: frozenset[int] = frozenset({5})  # zero-indexed row 6
 
 #: Canonical panel rectangle that calibration warps the detected panel onto.
-CANONICAL_PANEL_SIZE: tuple[int, int] = (420, 900)  # (width, height) px
+#:
+#: Sized to the panel's real proportions, measured off session frames: the panel
+#: runs about 94x347 px in a 1080-wide portrait frame, i.e. h/w ~ 3.7. Warping a
+#: 3.7:1 source onto a 2.1:1 canvas would stretch every digit horizontally by
+#: nearly 2x before OCR, so the canvas matches the source aspect instead.
+CANONICAL_PANEL_SIZE: tuple[int, int] = (400, 1400)  # (width, height) px
+
+#: Plausible h/w range for the stat panel. Measured 3.4-3.7 across frames; the
+#: window is deliberately generous because perspective from an off-axis camera
+#: shears the apparent ratio.
+PANEL_ASPECT_RANGE: tuple[float, float] = (2.6, 4.8)
+
+#: The panel's top strip is a header (hamburger menu, shot counter, and a badge
+#: that appears to be a running clock) sitting above the 2x6 value grid. It is
+#: excluded from both the grid and the change-detection diff -- see
+#: PANEL_HEADER_FRACTION's use in shot_detection.
+PANEL_HEADER_FRACTION: float = 0.09
+
+#: Where the stat panel sits inside the *screen*, as fractions of the
+#: rectified screen (left, top, right, bottom).
+#:
+#: The panel itself has no crisp border -- it is a translucent overlay on a
+#: bright projected image -- but the projected screen is a bright quadrilateral
+#: in a dark room and is trivially detectable. Locating the screen first and
+#: taking a fixed fraction of it is far more robust, and the fractions are
+#: camera-invariant once the screen has been rectified.
+PANEL_BOUNDS_IN_SCREEN: tuple[float, float, float, float] = (0.0, 0.01, 0.21, 1.0)
 
 
 def grid_position(metric_key: str) -> tuple[int, int]:
