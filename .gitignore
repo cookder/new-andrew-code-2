@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# Node
+node_modules/
+dist/
+
+# Local data: the database, ingested video, extracted audio, frames and clips.
+# Several GB per session -- never committed.
+*.db
+*.db-wal
+*.db-shm
+/data/
