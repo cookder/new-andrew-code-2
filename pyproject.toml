@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "golf-analyzer"
 version = "0.1.0"
@@ -23,6 +27,14 @@ media = [
     "numpy>=1.26",
 ]
 dev = ["pytest>=8.0", "httpx>=0.27"]
+
+# `frontend/` sits alongside `backend/` at the top level, so setuptools' flat
+# -layout auto-discovery refuses to guess. Name the package explicitly.
+[tool.setuptools.packages.find]
+include = ["backend*"]
+
+[tool.setuptools.package-data]
+"backend.app" = ["schema.sql"]
 
 [project.scripts]
 golf-seed = "backend.app.seed:main"
